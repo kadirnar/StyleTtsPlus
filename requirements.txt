@@ -1,10 +1,11 @@
-SoundFile
 torchaudio
 munch
 torch
 pydub
 pyyaml
-librosa
+librosa==0.9.2
+numba==0.56.4
+llvmlite==0.39.1
 nltk
 matplotlib
 accelerate
@@ -15,3 +16,6 @@ tqdm
 typing
 typing-extensions
 git+https://github.com/resemble-ai/monotonic_align.git
+tensorboard
+phonemizer>=3.2.0
+soundfile>=0.12.1
