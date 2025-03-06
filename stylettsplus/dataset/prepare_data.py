@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Data preparation script for StyleTTS2 training.
-This script processes wav and text files to create the required format for StyleTTS2 training.
-Uses parallel processing and GPU acceleration for faster processing.
+This script processes wav and text files from kore_wavs and puck_wavs directories
+to create train_list.txt and val_list.txt files for StyleTTS2 training.
+Uses parallel processing with all available CPU cores for faster processing.
 """
 
 import os
-import argparse
 import glob
 import tqdm
 import soundfile as sf
@@ -15,16 +15,12 @@ import re
 from pathlib import Path
 import phonemizer
 from phonemizer.backend import EspeakBackend
-import torch
 import numpy as np
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 import time
-
-# Check if CUDA is available for GPU acceleration
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {DEVICE}")
+import random
 
 def process_text(text, language='en-us'):
     """
@@ -36,26 +32,12 @@ def process_text(text, language='en-us'):
 
 def resample_audio(input_path, output_path, target_sr=24000):
     """
-    Resample audio to target sample rate
+    Resample audio to target sample rate using CPU
     """
     try:
         y, sr = librosa.load(input_path, sr=None)
         if sr != target_sr:
-            # Use GPU for resampling if available
-            if DEVICE.type == 'cuda' and torch.cuda.is_available():
-                # Convert to tensor and move to GPU
-                y_tensor = torch.tensor(y, device=DEVICE).float()
-                # Resample using torchaudio if available, otherwise fallback to librosa
-                try:
-                    import torchaudio
-                    import torchaudio.functional as F
-                    y_resampled = F.resample(y_tensor, sr, target_sr)
-                    y = y_resampled.cpu().numpy()
-                except (ImportError, AttributeError):
-                    # Fallback to librosa
-                    y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
-            else:
-                y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
+            y = librosa.resample(y, orig_sr=sr, target_sr=target_sr)
         sf.write(output_path, y, target_sr)
         return True
     except Exception as e:
@@ -111,44 +93,21 @@ def process_file(wav_path, text_dir, output_dir, output_sr, language, speaker_id
     except Exception as e:
         return (False, filename, str(e), None)
 
-def main():
-    parser = argparse.ArgumentParser(description="Prepare data for StyleTTS2 training")
-    parser.add_argument("--wav_dir", type=str, default="hf_data/kore_wavs", help="Directory containing wav files")
-    parser.add_argument("--text_dir", type=str, default="hf_data/kore_wavs", help="Directory containing text files")
-    parser.add_argument("--output_dir", type=str, default="Data", help="Output directory")
-    parser.add_argument("--output_sr", type=int, default=24000, help="Output sample rate")
-    parser.add_argument("--val_ratio", type=float, default=0.1, help="Validation set ratio")
-    parser.add_argument("--speaker_id", type=str, default="0", help="Speaker ID for single speaker dataset")
-    parser.add_argument("--language", type=str, default="en-us", help="Language for phonemization")
-    parser.add_argument("--num_workers", type=int, default=None, help="Number of worker processes (default: CPU count)")
-    parser.add_argument("--batch_size", type=int, default=100, help="Batch size for processing")
-    
-    args = parser.parse_args()
-    
-    # Set number of workers
-    num_workers = args.num_workers if args.num_workers is not None else multiprocessing.cpu_count()
-    print(f"Using {num_workers} worker processes")
-    
-    # Convert relative paths to absolute paths if needed
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    wav_dir = os.path.join(base_dir, args.wav_dir) if not os.path.isabs(args.wav_dir) else args.wav_dir
-    text_dir = os.path.join(base_dir, args.text_dir) if not os.path.isabs(args.text_dir) else args.text_dir
-    output_dir = os.path.join(base_dir, args.output_dir) if not os.path.isabs(args.output_dir) else args.output_dir
-    
-    # Create output directories
-    os.makedirs(os.path.join(output_dir, "wavs"), exist_ok=True)
-    
+def process_directory(wav_dir, text_dir, output_dir, output_sr, language, speaker_id, num_workers, batch_size):
+    """
+    Process all files in a directory
+    Returns a list of successfully processed entries
+    """
     # Get all wav files
     wav_files = glob.glob(os.path.join(wav_dir, "*.wav"))
     total_files = len(wav_files)
     print(f"Found {total_files} wav files in {wav_dir}")
     
     if total_files == 0:
-        print(f"No wav files found in {wav_dir}. Please check the directory path.")
-        return
+        print(f"No wav files found in {wav_dir}. Skipping directory.")
+        return []
     
     # Process files in parallel
-    start_time = time.time()
     data_entries = []
     processed_count = 0
     skipped_count = 0
@@ -159,16 +118,15 @@ def main():
         process_file, 
         text_dir=text_dir, 
         output_dir=output_dir, 
-        output_sr=args.output_sr, 
-        language=args.language, 
-        speaker_id=args.speaker_id
+        output_sr=output_sr, 
+        language=language, 
+        speaker_id=speaker_id
     )
     
     # Process files in batches to avoid memory issues
-    batch_size = args.batch_size
     num_batches = (total_files + batch_size - 1) // batch_size  # Ceiling division
     
-    with tqdm.tqdm(total=total_files, desc="Processing files") as pbar:
+    with tqdm.tqdm(total=total_files, desc=f"Processing {os.path.basename(wav_dir)}") as pbar:
         for batch_idx in range(num_batches):
             start_idx = batch_idx * batch_size
             end_idx = min(start_idx + batch_size, total_files)
@@ -193,36 +151,101 @@ def main():
                     
                     pbar.update(1)
     
+    print(f"{os.path.basename(wav_dir)} - Processed: {processed_count}, Skipped: {skipped_count}, Errors: {error_count}")
+    return data_entries
+
+def main():
+    # Fixed parameters
+    output_dir = "Data"
+    output_sr = 24000
+    val_ratio = 0.1
+    language = "en-us"
+    batch_size = 100
+    
+    # Source directories
+    kore_dir = "hf_data/kore_wavs"
+    puck_dir = "hf_data/puck_wavs"
+    
+    # Use all available CPU cores
+    num_workers = multiprocessing.cpu_count()
+    print(f"Using {num_workers} worker processes (all available CPU cores)")
+    
+    # Convert relative paths to absolute paths if needed
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(base_dir, "../.."))  # Go up two levels to project root
+    kore_dir = os.path.join(project_root, kore_dir)
+    puck_dir = os.path.join(project_root, puck_dir)
+    output_dir = os.path.join(project_root, output_dir) if not os.path.isabs(output_dir) else output_dir
+    
+    # Create output directories
+    os.makedirs(os.path.join(output_dir, "wavs"), exist_ok=True)
+    
+    # Timer start
+    start_time = time.time()
+    
+    # Process both directories
+    print("\nProcessing Kore dataset...")
+    kore_entries = process_directory(
+        kore_dir, 
+        kore_dir, 
+        output_dir, 
+        output_sr, 
+        language, 
+        "0",  # Use "0" as speaker ID for kore files 
+        num_workers, 
+        batch_size
+    )
+    
+    print("\nProcessing Puck dataset...")
+    puck_entries = process_directory(
+        puck_dir, 
+        puck_dir, 
+        output_dir, 
+        output_sr, 
+        language, 
+        "1",  # Use "1" as speaker ID for puck files
+        num_workers, 
+        batch_size
+    )
+    
+    # Combine entries
+    data_entries = kore_entries + puck_entries
+    
     processing_time = time.time() - start_time
-    print(f"Processing completed in {processing_time:.2f} seconds ({processing_time/60:.2f} minutes)")
+    print(f"\nProcessing completed in {processing_time:.2f} seconds ({processing_time/60:.2f} minutes)")
     
     if len(data_entries) == 0:
         print("No data entries were processed successfully. Please check your input files.")
         return
     
-    # Split into train and validation sets
-    np.random.seed(42)  # For reproducibility
-    np.random.shuffle(data_entries)
-    val_size = max(1, int(len(data_entries) * args.val_ratio))
-    val_entries = data_entries[:val_size]
+    # Split data into train and validation sets
+    random.seed(42)  # For reproducibility
+    random.shuffle(data_entries)
+    val_size = int(len(data_entries) * val_ratio)
     train_entries = data_entries[val_size:]
+    val_entries = data_entries[:val_size]
     
-    # Write train and validation lists
-    with open(os.path.join(output_dir, "train_list.txt"), 'w', encoding='utf-8') as f:
-        for filename, phonemes, speaker_id in train_entries:
-            f.write(f"{filename}|{phonemes}|{speaker_id}\n")
+    print(f"\nTotal processed entries: {len(data_entries)}")
+    print(f"Train set size: {len(train_entries)}")
+    print(f"Validation set size: {len(val_entries)}")
     
-    with open(os.path.join(output_dir, "val_list.txt"), 'w', encoding='utf-8') as f:
-        for filename, phonemes, speaker_id in val_entries:
-            f.write(f"{filename}|{phonemes}|{speaker_id}\n")
+    # Create train_list.txt and val_list.txt files
+    train_file = os.path.join(output_dir, "train_list.txt")
+    val_file = os.path.join(output_dir, "val_list.txt")
     
-    print(f"Processed {processed_count} files successfully")
-    print(f"Skipped {skipped_count} files")
-    print(f"Encountered errors in {error_count} files")
-    print(f"Created train set with {len(train_entries)} entries")
-    print(f"Created validation set with {len(val_entries)} entries")
-    print(f"Data saved to {output_dir}")
-    print("Data preparation completed!")
+    # Write train_list.txt
+    with open(train_file, 'w', encoding='utf-8') as f:
+        for filename, phonemes, spk_id in train_entries:
+            f.write(f"{os.path.splitext(filename)[0]}.wav|{phonemes}|{spk_id}\n")
+    
+    # Write val_list.txt if there are validation entries
+    if val_entries:
+        with open(val_file, 'w', encoding='utf-8') as f:
+            for filename, phonemes, spk_id in val_entries:
+                f.write(f"{os.path.splitext(filename)[0]}.wav|{phonemes}|{spk_id}\n")
+    
+    print(f"Files written to {train_file} and {val_file}")
+    print("Data preparation complete!")
 
 if __name__ == "__main__":
     main()

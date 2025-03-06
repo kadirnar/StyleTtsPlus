@@ -19,3 +19,4 @@ git+https://github.com/resemble-ai/monotonic_align.git
 tensorboard
 phonemizer>=3.2.0
 soundfile>=0.12.1
+datasets
