@@ -461,3 +461,12 @@ def main(config_path):
 
 if __name__ == "__main__":
     main()
+            'val_loss': loss_test / iters_test,
+            'epoch': epoch,
+        }
+        save_path = osp.join(log_dir, config.get('first_stage_path', 'first_stage.pth'))
+        torch.save(state, save_path)
+
+
+if __name__ == "__main__":
+    main()
