@@ -162,20 +162,17 @@ def main():
     language = "en-us"
     batch_size = 100
     
-    # Source directories
-    kore_dir = "hf_data/kore_wavs"
-    puck_dir = "hf_data/puck_wavs"
+    # Source directories - use absolute paths
+    kore_dir = "/mnt/kadirnar/StyleTTS2/hf_data/kore_wavs"
+    puck_dir = "/mnt/kadirnar/StyleTTS2/hf_data/puck_wavs"
     
     # Use all available CPU cores
     num_workers = multiprocessing.cpu_count()
     print(f"Using {num_workers} worker processes (all available CPU cores)")
     
-    # Convert relative paths to absolute paths if needed
+    # Convert output_dir to absolute path if needed
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(base_dir, "../.."))  # Go up two levels to project root
-    kore_dir = os.path.join(project_root, kore_dir)
-    puck_dir = os.path.join(project_root, puck_dir)
-    output_dir = os.path.join(project_root, output_dir) if not os.path.isabs(output_dir) else output_dir
+    output_dir = os.path.join(base_dir, output_dir) if not os.path.isabs(output_dir) else output_dir
     
     # Create output directories
     os.makedirs(os.path.join(output_dir, "wavs"), exist_ok=True)
